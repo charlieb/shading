@@ -7,6 +7,7 @@ from PIL import Image
 
 from skimage import measure, filters, morphology
 from shapely import geometry as geom
+from shapely import coords
 
 from itertools import product
 
@@ -17,15 +18,7 @@ class GreyPolygon(geom.Polygon):
     def __init__(self, grey, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.grey = grey
-
-def find_regions2(image, values):
-    polys = [[] for _ in values]
-    for feat in features.shapes(image, connectivity=4):
-        poly = geom.shape(feat[0])
-        if poly.area > 9:
-            poly = poly.buffer(0)
-            polys[values.index(feat[1])].append(poly)
-    return polys
+        self.container_for = []
 
 def clean_regions(polys):
     all_clean = False
@@ -65,7 +58,7 @@ def find_regions(image, values):
                 if isinstance(ps, geom.MultiPolygon):
                     polys.extend(GreyPolygon(val, p) for p in ps if not p.is_empty)
                 elif not ps.is_empty:
-                        polys.append(GreyPolygon(val, ps))
+                    polys.append(GreyPolygon(val, ps))
 
     return polys
 
@@ -77,6 +70,7 @@ def sort_polys(polys):
             if i == j: continue
             if poly1.within(poly2):
                 within_n[i] += 1
+                poly2.container_for.append(poly1)
 
     print([n for _, n in sorted(zip(polys, within_n), key=lambda x: x[1])])
 
@@ -112,6 +106,50 @@ def write_svg_greys(polys, filename, w,h, color='black', opacity=1.0):
     dwg.viewbox(minx=0, miny=0, width=w, height=h)
     dwg.save()
 
+def write_svg_lines(lines, filename, w,h, color='black'):
+    dwg = svg.Drawing(filename)
+
+    for line in lines:
+        svgline = svg.shapes.Line(line.coords[0], line.coords[1])
+        svgline.fill('none')
+        svgline.stroke(color, width=1.00, opacity=1.0)
+        dwg.add(svgline)
+
+    dwg.viewbox(minx=0, miny=0, width=w, height=h)
+    dwg.save()
+
+def shade(polys):
+    lines = []
+    for poly in polys:
+        step = 1 + 1 * poly.grey / 256.
+        sx, sy, ex, ey = poly.bounds
+        max_range = max(ex - sx, ey - sy) * 2
+        shade_lines = geom.MultiLineString([geom.LineString([(sx + x * step, sy), (sx, sy + x * step)]) 
+                                            for x in range(int(max_range / step))])
+        # shade lines are within the shape
+        shade_lines = shade_lines.intersection(poly)
+        # but any contained shapes must be removed
+        for p in poly.container_for:
+            shade_lines = shade_lines.difference(p)
+            
+        if isinstance(shade_lines, geom.LineString):
+            lines.append(shade_lines)
+            continue
+
+        for line in shade_lines:
+            if line.is_empty: continue
+
+            if isinstance(line, geom.MultiLineString) or isinstance(line, geom.GeometryCollection): 
+                lines.extend(li for li in line if not li.is_empty and isinstance(li, geom.LineString))
+                #print([type(li).__name__ for li in line])
+            elif isinstance(line, geom.LineString) and not line.is_empty:
+                lines.append(line)
+                #print('Line', line.length)
+            else:
+                print('??', type(line).__name__)
+
+    return lines
+
 def test_point(polys, point):
     for i, poly in enumerate(polys):
         if poly.contains(point):
@@ -126,7 +164,7 @@ def main():
     print('min %s, max %s'%(mini, maxi))
 
     grey_range = maxi-mini
-    nsteps = 5
+    nsteps = 10
 
     step = grey_range / nsteps
 
@@ -153,25 +191,22 @@ def main():
     image = np.pad(image, 2, 'constant', constant_values = 0)
     polys = find_regions(image, values) 
 
-    print('Cleaning region overlaps')
+    #print('Cleaning region overlaps')
     #polys = clean_regions(polys)
-
-    for x,y in [(151,15), (100,375), (240,90), (125,210), (131,290)]:
-        test_point(polys, geom.Point(x,y))
-
-    print('All poygons valid: ', all(poly.is_valid for poly in polys))
 
     # sort them so that they are painted in the right order
     print('Sorting')
     polys = sort_polys(polys)
-    #print([(i,p.area) for i,p in enumerate(polys) if p.contains(geom.Point(131,290))])
-    #polys = [p for p in polys if p.contains(geom.Point(131,290))]
-    #polys = sort_polys(polys)
-    #print([p.area for p in polys])
+
+    print('Generating shade')
+    lines = shade(polys)
+    print(len(lines))
 
     print('Drawing')
+    print(len(lines), 'lines')
+    write_svg_lines(lines, 'test.svg', *image.shape)
     #write_svg(polys, 'test.svg', *image.shape)
-    write_svg_greys(polys, 'test.svg', *image.shape)
+    #write_svg_greys(polys, 'test.svg', *image.shape)
 
     im = Image.fromarray(image)
     im.save('test_out.png')
