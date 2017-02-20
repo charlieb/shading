@@ -190,6 +190,7 @@ def diagonal_lines(grey, w,h):
     xmax = max(w,h)
     dmax = sqrt(xmax**2 * 2) # along diagonal
     xstep = sqrt(step**2 / 2) * 2
+    print('grey steps', grey, step, xstep)
     lines = []
     for i in range(int(dmax / step) + 1):
         if i*xstep <= xmax:
@@ -200,7 +201,7 @@ def diagonal_lines(grey, w,h):
     return geom.MultiLineString(lines)
 
 def hatching(grey, w,h):
-    diags = diagonal_lines(grey * 2., w,h)
+    diags = diagonal_lines(grey * sqrt(2.), w,h)
     lines = []
     xh = max(w,h) / 2.
 
@@ -213,9 +214,9 @@ def hatching(grey, w,h):
     return geom.MultiLineString(lines)
 
 def generate_textures(greys, w,h):
-    return {g: hatching(g, w,h) for g in greys}
     return {g: diagonal_lines(g, w,h) for g in greys}
-    #return {g: random_lines(g, w,h) for g in greys}
+    return {g: hatching(g, w,h) for g in greys}
+    return {g: random_lines(g, w,h) for g in greys}
 
 
 def fix_greys(polys, image):
@@ -244,6 +245,27 @@ def test_point(polys, point):
         if poly.contains(point):
             print(i, end=',')
     print()
+
+def shade_test():
+    dwg = svg.Drawing('grey_test.svg')
+    nsteps = 10
+    x = 500
+    for i in range(nsteps):
+        grey = (i+1) * 256 / nsteps
+        box = geom.box(0, i * x/nsteps, x/nsteps, (i+1) * x/nsteps)
+        lines = affinity.translate(diagonal_lines(grey, x/nsteps, x/nsteps), x/nsteps, i*x/nsteps)
+
+        svgbox = svg.shapes.Polygon(box.exterior.coords)
+        svgbox.fill('rgb(%i,%i,%i)'%(grey,grey,grey))
+        dwg.add(svgbox)
+        for line in lines:
+            svgline = svg.shapes.Line(line.coords[0], line.coords[1])
+            svgline.fill('none')
+            svgline.stroke('black', width=1.00)
+            dwg.add(svgline)
+
+    dwg.viewbox(minx=0, miny=0, width=2*x/nsteps, height=x)
+    dwg.save()
 
 
 def main():
@@ -327,5 +349,7 @@ def test():
 
 
 if __name__ == '__main__':
+    shade_test()
+    #exit()
     test()
     main()
