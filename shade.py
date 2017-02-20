@@ -184,6 +184,24 @@ def random_lines(grey, w,h):
     length = sqrt(w**2 + h**2)
     return geom.MultiLineString([affinity.translate(random_line(length, w, h), woff, hoff)
                                 for _ in range(nlines)])
+
+def diagonal_lines2(grey, w,h):
+
+    x = max(w,h)
+    d = sqrt(x**2 * 2)
+    nlines = int(d * (1. - (grey / 256.)))
+    if nlines == 0: return geom.MultiLineString([])
+
+    step = d / nlines
+    xstep = sqrt(step**2 / 2) * 2
+    lines = []
+    for i in range(nlines):
+        if i*xstep <= x:
+            lines.append(geom.LineString([(i*xstep,0), (0,i*xstep)]))
+        else:
+            lines.append(geom.LineString([(i*xstep-x,x), (x,i*xstep-x)]))
+    return geom.MultiLineString(lines)
+
 def diagonal_lines(grey, w,h):
     #step = (sqrt(2) / 2) * (1 + 5 * (grey / 256.)**2)
     step = 0.7 * (1 + 5 * (grey / 256.)**2)
@@ -214,6 +232,7 @@ def hatching(grey, w,h):
     return geom.MultiLineString(lines)
 
 def generate_textures(greys, w,h):
+    return {g: diagonal_lines2(g, w,h) for g in greys}
     return {g: diagonal_lines(g, w,h) for g in greys}
     return {g: hatching(g, w,h) for g in greys}
     return {g: random_lines(g, w,h) for g in greys}
@@ -253,7 +272,7 @@ def shade_test():
     for i in range(nsteps):
         grey = (i+1) * 256 / nsteps
         box = geom.box(0, i * x/nsteps, x/nsteps, (i+1) * x/nsteps)
-        lines = affinity.translate(diagonal_lines(grey, x/nsteps, x/nsteps), x/nsteps, i*x/nsteps)
+        lines = affinity.translate(diagonal_lines2(grey, x/nsteps, x/nsteps), x/nsteps, i*x/nsteps)
 
         svgbox = svg.shapes.Polygon(box.exterior.coords)
         svgbox.fill('rgb(%i,%i,%i)'%(grey,grey,grey))
