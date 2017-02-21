@@ -185,7 +185,7 @@ def random_lines(grey, w,h):
     return geom.MultiLineString([affinity.translate(random_line(length, w, h), woff, hoff)
                                 for _ in range(nlines)])
 
-def diagonal_lines2(grey, w,h):
+def diagonal_lines(grey, w,h):
 
     x = max(w,h)
     d = sqrt(x**2 * 2)
@@ -202,39 +202,41 @@ def diagonal_lines2(grey, w,h):
             lines.append(geom.LineString([(i*xstep-x,x), (x,i*xstep-x)]))
     return geom.MultiLineString(lines)
 
-def diagonal_lines(grey, w,h):
-    #step = (sqrt(2) / 2) * (1 + 5 * (grey / 256.)**2)
-    step = 0.7 * (1 + 5 * (grey / 256.)**2)
-    xmax = max(w,h)
-    dmax = sqrt(xmax**2 * 2) # along diagonal
-    xstep = sqrt(step**2 / 2) * 2
-    print('grey steps', grey, step, xstep)
-    lines = []
-    for i in range(int(dmax / step) + 1):
-        if i*xstep <= xmax:
-            lines.append(geom.LineString([(i*xstep,0), (0,i*xstep)]))
-        else:
-            lines.append(geom.LineString([(i*xstep-xmax,xmax), (xmax,i*xstep-xmax)]))
-
-    return geom.MultiLineString(lines)
 
 def hatching(grey, w,h):
-    diags = diagonal_lines(grey * sqrt(2.), w,h)
-    lines = []
-    xh = max(w,h) / 2.
+    x = max(w,h)
+    d = sqrt(x**2 * 2)
+    blackness = 1. - (grey / 256.)
+    nlines = int(d * blackness**1.5) # x*sqrt(x) = x**1.5
+    if nlines == 0: return geom.MultiLineString([])
 
-    for diag in diags:
-        lines.append(diag)
-        x1,y1,x2,y2 = *diag.coords[0], *diag.coords[1]
-        x1 = (xh*2-x1)# if x1 > 0 else 0
-        x2 = (xh*2-x2)# if x2 > 0 else 0
-        lines.append(geom.LineString([(x1,y1), (x2,y2)]))
+    step = d / nlines
+    xstep = sqrt(step**2 / 2) * 2
+    lines = []
+
+    xh = max(w,h) / 2.
+    rev = True
+
+    for i in range(nlines):
+        if i*xstep <= x:
+            line = geom.LineString([(i*xstep,0), (0,i*xstep)])
+        else:
+            line = geom.LineString([(i*xstep-x,x), (x,i*xstep-x)])
+
+        if rev:
+            x1,y1,x2,y2 = *line.coords[0], *line.coords[1]
+            x1 = (xh*2-x1)
+            x2 = (xh*2-x2)
+            line = geom.LineString([(x1,y1), (x2,y2)])
+
+        lines.append(line)
+        rev = not rev
+
     return geom.MultiLineString(lines)
 
 def generate_textures(greys, w,h):
-    return {g: diagonal_lines2(g, w,h) for g in greys}
-    return {g: diagonal_lines(g, w,h) for g in greys}
     return {g: hatching(g, w,h) for g in greys}
+    return {g: diagonal_lines(g, w,h) for g in greys}
     return {g: random_lines(g, w,h) for g in greys}
 
 
@@ -265,26 +267,6 @@ def test_point(polys, point):
             print(i, end=',')
     print()
 
-def shade_test():
-    dwg = svg.Drawing('grey_test.svg')
-    nsteps = 10
-    x = 500
-    for i in range(nsteps):
-        grey = (i+1) * 256 / nsteps
-        box = geom.box(0, i * x/nsteps, x/nsteps, (i+1) * x/nsteps)
-        lines = affinity.translate(diagonal_lines2(grey, x/nsteps, x/nsteps), x/nsteps, i*x/nsteps)
-
-        svgbox = svg.shapes.Polygon(box.exterior.coords)
-        svgbox.fill('rgb(%i,%i,%i)'%(grey,grey,grey))
-        dwg.add(svgbox)
-        for line in lines:
-            svgline = svg.shapes.Line(line.coords[0], line.coords[1])
-            svgline.fill('none')
-            svgline.stroke('black', width=1.00)
-            dwg.add(svgline)
-
-    dwg.viewbox(minx=0, miny=0, width=2*x/nsteps, height=x)
-    dwg.save()
 
 
 def main():
@@ -304,7 +286,7 @@ def main():
     end = start + step
 
     values = []
-    print('Finding Ranges: ')
+    print('Finding Ranges: ', end='')
     for _ in range(nsteps):
         print((start, mid, end), end=',')
         values.append(mid)
@@ -316,6 +298,7 @@ def main():
         start = end
         mid = int(start + step / 2)
         end = start + step
+    print()
 
     print('Generating Textures')
     textures = generate_textures(values, *image.shape)
@@ -366,9 +349,30 @@ def test():
     p = p.difference(geom.Point(0,0).buffer(0.1))
     print(p.area)
 
+def shade_test():
+    dwg = svg.Drawing('grey_test.svg')
+    nsteps = 10
+    x = 500
+    for i in range(nsteps):
+        grey = (i+1) * 256 / nsteps
+        box = geom.box(0, i * x/nsteps, x/nsteps, (i+1) * x/nsteps)
+        #lines = affinity.translate(diagonal_lines(grey, x/nsteps, x/nsteps), x/nsteps, i*x/nsteps)
+        lines = affinity.translate(hatching(grey, x/nsteps, x/nsteps), x/nsteps, i*x/nsteps)
+
+        svgbox = svg.shapes.Polygon(box.exterior.coords)
+        svgbox.fill('rgb(%i,%i,%i)'%(grey,grey,grey))
+        dwg.add(svgbox)
+        for line in lines:
+            svgline = svg.shapes.Line(line.coords[0], line.coords[1])
+            svgline.fill('none')
+            svgline.stroke('black', width=1.00)
+            dwg.add(svgline)
+
+    dwg.viewbox(minx=0, miny=0, width=2*x/nsteps, height=x)
+    dwg.save()
 
 if __name__ == '__main__':
     shade_test()
-    #exit()
+    exit()
     test()
     main()
