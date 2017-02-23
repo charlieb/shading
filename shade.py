@@ -2,7 +2,7 @@ import numpy as np
 from scipy.ndimage import imread
 from math import pi, sqrt, sin, cos
 import svgwrite as svg
-from random import random, choice
+from random import random
 from PIL import Image
 
 from skimage import measure
@@ -10,6 +10,9 @@ from shapely import geometry as geom
 from shapely import coords, affinity
 
 from itertools import product
+
+
+from shade_textures import *
 
 class MultiGreyPolygon(geom.MultiPolygon):
     def __init__(self, grey, *args, **kwargs):
@@ -162,82 +165,6 @@ def shade(polys, textures):
     return lines
 
 
-def random_line(length, w,h):
-    x = random()*w
-    y = random()*h
-    p1 = (x,y)
-    a = random() * 2*pi
-    p2 = (x + length*cos(a), y + length*sin(a))
-    return geom.LineString([p1, p2])
-
-def random_line(length, w,h):
-    return geom.LineString([(random()*w, random()*h), (random()*w, random()*h)])
-
-def random_lines(grey, w,h):
-    black_lines_per_area = 0.02
-    increase_area = 1.1
-    woff, hoff = w*(1-increase_area) / 2, h*(1-increase_area) / 2
-    w *= increase_area
-    h *= increase_area
-
-    nlines = 1 + int(black_lines_per_area * w*h * (1 - grey / 256.))
-    length = sqrt(w**2 + h**2)
-    return geom.MultiLineString([affinity.translate(random_line(length, w, h), woff, hoff)
-                                for _ in range(nlines)])
-
-def diagonal_lines(grey, w,h):
-
-    x = max(w,h)
-    d = sqrt(x**2 * 2)
-    nlines = int(d * (1. - (grey / 256.)))
-    if nlines == 0: return geom.MultiLineString([])
-
-    step = d / nlines
-    xstep = sqrt(step**2 / 2) * 2
-    lines = []
-    for i in range(nlines):
-        if i*xstep <= x:
-            lines.append(geom.LineString([(i*xstep,0), (0,i*xstep)]))
-        else:
-            lines.append(geom.LineString([(i*xstep-x,x), (x,i*xstep-x)]))
-    return geom.MultiLineString(lines)
-
-
-def hatching(grey, w,h):
-    x = max(w,h)
-    d = sqrt(x**2 * 2)
-    blackness = 1. - (grey / 256.)
-    nlines = int(d * blackness**1.5) # x*sqrt(x) = x**1.5
-    if nlines == 0: return geom.MultiLineString([])
-
-    step = d / nlines
-    xstep = sqrt(step**2 / 2) * 2
-    lines = []
-
-    xh = max(w,h) / 2.
-    rev = True
-
-    for i in range(nlines):
-        if i*xstep <= x:
-            line = geom.LineString([(i*xstep,0), (0,i*xstep)])
-        else:
-            line = geom.LineString([(i*xstep-x,x), (x,i*xstep-x)])
-
-        if rev:
-            x1,y1,x2,y2 = *line.coords[0], *line.coords[1]
-            x1 = (xh*2-x1)
-            x2 = (xh*2-x2)
-            line = geom.LineString([(x1,y1), (x2,y2)])
-
-        lines.append(line)
-        rev = not rev
-
-    return geom.MultiLineString(lines)
-
-def generate_textures(greys, w,h):
-    return {g: hatching(g, w,h) for g in greys}
-    return {g: diagonal_lines(g, w,h) for g in greys}
-    return {g: random_lines(g, w,h) for g in greys}
 
 
 def fix_greys(polys, image):
@@ -349,30 +276,13 @@ def test():
     p = p.difference(geom.Point(0,0).buffer(0.1))
     print(p.area)
 
-def shade_test():
-    dwg = svg.Drawing('grey_test.svg')
-    nsteps = 10
-    x = 500
-    for i in range(nsteps):
-        grey = (i+1) * 256 / nsteps
-        box = geom.box(0, i * x/nsteps, x/nsteps, (i+1) * x/nsteps)
-        #lines = affinity.translate(diagonal_lines(grey, x/nsteps, x/nsteps), x/nsteps, i*x/nsteps)
-        lines = affinity.translate(hatching(grey, x/nsteps, x/nsteps), x/nsteps, i*x/nsteps)
-
-        svgbox = svg.shapes.Polygon(box.exterior.coords)
-        svgbox.fill('rgb(%i,%i,%i)'%(grey,grey,grey))
-        dwg.add(svgbox)
-        for line in lines:
-            svgline = svg.shapes.Line(line.coords[0], line.coords[1])
-            svgline.fill('none')
-            svgline.stroke('black', width=1.00)
-            dwg.add(svgline)
-
-    dwg.viewbox(minx=0, miny=0, width=2*x/nsteps, height=x)
-    dwg.save()
 
 if __name__ == '__main__':
-    shade_test()
+    init_shade_data_cache()
+    calibrate_grey(64, hatch_shade, tolerance=1)
+    save_shade_data_cache()
     exit()
+    render_svg('grey_test.svg')
+    shade_test()
     test()
     main()
