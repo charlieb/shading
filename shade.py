@@ -7,13 +7,53 @@ from PIL import Image
 
 from skimage import measure
 from shapely import geometry as geom
-from shapely import coords, affinity
+from shapely import affinity
 
 from itertools import product
 
 
 from shade_textures import *
 
+def flatten_Polygons(polys):
+    all_polys = []
+    for poly in polys:
+        if isinstance(poly, geom.MultiPolygon):
+            all_polys.extend(list(poly))
+        else:
+            all_polys.append(poly)
+    return all_polys
+
+def filter_Polygons(polys):
+    res = []
+    try:
+        for poly in polys:
+            if isinstance(poly, geom.Polygon) and not poly.is_empty:
+                res.append(poly)
+    except TypeError: # not an iterable
+        if isinstance(polys, geom.Polygon) and not polys.is_empty:
+            res.append(polys)
+
+    return geom.MultiPolygon(res)
+
+def find_regions(image, values, min_area=9.):
+    polys = []
+    for val in values:
+        conts = measure.find_contours(image, val) 
+        for cont in conts:
+            if len(cont) >= 4:
+                ps = geom.Polygon(cont)
+
+                # fix all self intersections
+                ps = ps.buffer(0)
+
+                if isinstance(ps, geom.MultiPolygon):
+                    polys.extend(p for p in ps if not p.is_empty and p.area > min_area)
+                elif not ps.is_empty and ps.area > min_area:
+                    polys.append(ps)
+
+    return polys
+
+### GREYPOLYGON TYPES BELOW THIS LINE
 class MultiGreyPolygon(geom.MultiPolygon):
     def __init__(self, grey, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -30,52 +70,12 @@ class GreyPolygon(geom.Polygon):
         super().__init__(*args, **kwargs)
         self.grey = grey
         self.container_for = []
-    def split_from_contained(self):
-        shape = MultiGreyPolygon(self.grey, [self])
-        for p in self.container_for:
-            shape = shape.difference(p)
-        return shape
-
-def clean_regions(polys):
-    all_clean = False
-    while not all_clean:
-        clean = []
-        all_clean = True
-        for i, p1 in enumerate(polys):
-            cleaned_p1 = p1
-            for p2 in polys[i+1:]:
-                if p1 == p2: continue
-                if p1.touches(p2):
-                    cleaned_p1 = p1.difference(p2.buffer(0.1))
-                    all_clean = False
-                    break
-
-            if isinstance(cleaned_p1, geom.MultiPolygon):
-                clean.extend(GreyPolygon(p1.grey, p) for p in cleaned_p1 if not p.is_empty)
-            elif not cleaned_p1.is_empty:
-                clean.append(GreyPolygon(p1.grey, cleaned_p1))
-        polys = clean
-
-    return polys
-
-def find_regions(image, values):
-    polys = []
-    min_area = 9.
-    for val in values:
-        conts = measure.find_contours(image, val) 
-        for cont in conts:
-            if len(cont) >= 4:
-                ps = geom.Polygon(cont)
-
-                # fix all self intersections
-                ps = ps.buffer(0)
-
-                if isinstance(ps, geom.MultiPolygon):
-                    polys.extend(GreyPolygon(val, p) for p in ps if not p.is_empty and p.area > min_area)
-                elif not ps.is_empty and ps.area > min_area:
-                    polys.append(GreyPolygon(val, ps))
-
-    return polys
+    def buffer(self, distance, **kwargs):
+        polys = super().buffer(distance, **kwargs)
+        if distance > 0 or isinstance(polys, geom.Polygon):
+            return GreyPolygon(self.grey, polys) # should only ever be one because it just growing
+        elif isinstance(polys, geom.MultiPolygon):
+            raise TypeError('GreyPolygons are not allowed to be split by buffering')
 
 def sort_polys(polys):
     # count how many other polys each one it within
@@ -93,6 +93,82 @@ def sort_polys(polys):
     # obtain the correct painters algorithm order
     return [poly for poly, _ in sorted(zip(polys, within_n), key=lambda x: x[1])]
 
+def int_spiral():
+    visited = []
+    facing = (0,1)
+    right = {(0,1) : (1,0), 
+             (1,0) : (0,-1),
+             (0,-1): (-1,0),
+             (-1,0): (0,1)}
+    x = y = 0
+    while True:
+        yield x,y
+        visited.insert(0, (x,y))
+        look_right = right[facing]
+        if (x + right[facing][0], y + right[facing][1]) not in visited:
+            facing = right[facing]
+        x += facing[0]
+        y += facing[1]
+
+def fix_grey(poly, image):
+    minx, miny, maxx, maxy = poly.bounds
+    for x,y in product(range(int(minx), int(maxx)), range(int(miny), int(maxy))):
+        pt = geom.Point(x,y)
+        if pt.within(poly):
+            fail = False
+            for p in poly.container_for:
+                if pt.within(p):
+                    fail = True
+                    break
+            if not fail:
+                poly.grey = image[x,y]
+                return
+
+def fix_greys(polys, image):
+    for i, poly in enumerate(polys):
+        fix_grey(poly, image)
+
+### SHADE
+def shade(polys, textures):
+    lines = []
+    for i, poly in enumerate(polys):
+        shade_lines = textures[poly.grey]
+        if i % 100 == 0:
+            print('/', end='', flush=True)
+        elif i % 10 == 0:
+            print(':', end='', flush=True)
+        else:
+            print('.', end='', flush=True)
+
+        #print(poly.grey, poly.area, len(shade_lines))
+        # shade lines are within the shape
+        shade_lines = shade_lines.intersection(poly)
+
+        for p in poly.container_for:
+            shade_lines = shade_lines.difference(p)
+            
+        if isinstance(shade_lines, geom.LineString):
+            lines.append(shade_lines)
+            continue
+        elif isinstance(shade_lines, geom.Point):
+            continue
+
+        for line in shade_lines:
+            if line.is_empty: continue
+
+            if isinstance(line, geom.MultiLineString) or isinstance(line, geom.GeometryCollection): 
+                lines.extend(li for li in line if not li.is_empty and isinstance(li, geom.LineString))
+                #print([type(li).__name__ for li in line])
+            elif isinstance(line, geom.LineString) and not line.is_empty:
+                lines.append(line)
+                #print('Line', line.length)
+            else:
+                print('??', type(line).__name__)
+
+    print()
+    return lines
+
+### WRITING FUNCTIONS
 def write_svg(polys, filename, w,h, color='black', opacity=1.0):
     dwg = svg.Drawing(filename)
     for poly in polys:
@@ -125,7 +201,7 @@ def write_svg_lines(lines, filename, w,h, color='black'):
     dwg = svg.Drawing(filename)
 
     for line in lines:
-        svgline = svg.shapes.Line(line.coords[0], line.coords[1])
+        svgline = svg.shapes.Polyline(line.coords)
         svgline.fill('none')
         svgline.stroke(color, width=1.00, opacity=1.0)
         dwg.add(svgline)
@@ -134,67 +210,14 @@ def write_svg_lines(lines, filename, w,h, color='black'):
     dwg.save()
 
 
-def shade(polys, textures):
-    lines = []
-    for poly in polys:
-        shade_lines = textures[poly.grey]
-
-        #print(poly.grey, poly.area, len(shade_lines))
-        # shade lines are within the shape
-        shade_lines = shade_lines.intersection(poly)
-
-        for p in poly.container_for:
-            shade_lines = shade_lines.difference(p)
-            
-        if isinstance(shade_lines, geom.LineString):
-            lines.append(shade_lines)
-            continue
-
-        for line in shade_lines:
-            if line.is_empty: continue
-
-            if isinstance(line, geom.MultiLineString) or isinstance(line, geom.GeometryCollection): 
-                lines.extend(li for li in line if not li.is_empty and isinstance(li, geom.LineString))
-                #print([type(li).__name__ for li in line])
-            elif isinstance(line, geom.LineString) and not line.is_empty:
-                lines.append(line)
-                #print('Line', line.length)
-            else:
-                print('??', type(line).__name__)
-
-    return lines
-
-
-
-
-def fix_greys(polys, image):
-    max_trials = 200
-    for i, poly in enumerate(polys):
-        point_ok = False
-        trials = 0
-        while not point_ok and trials < max_trials:
-            trials += 1
-            x = int(poly.bounds[0] + random() * (poly.bounds[2] - poly.bounds[0]))
-            y = int(poly.bounds[1] + random() * (poly.bounds[3] - poly.bounds[1]))
-            pt = geom.Point(x,y)
-            if pt.within(poly):
-                fail = False
-                for p in poly.container_for:
-                    if pt.within(p):
-                        fail = True
-                        break
-                if not fail:
-                    point_ok = True
-        if point_ok:
-            poly.grey = image[x,y]
-
 def test_point(polys, point):
+    poly_stack = []
     for i, poly in enumerate(polys):
         if poly.contains(point):
+            poly_stack.append(poly)
             print(i, end=',')
     print()
-
-
+    return poly_stack
 
 def main():
     # Change image into nstep grey image
@@ -213,55 +236,91 @@ def main():
     end = start + step
 
     values = []
-    print('Finding Ranges: ', end='')
+    print('Finding Greys')
     for _ in range(nsteps):
-        print((start, mid, end), end=',')
+        #print((start, mid, end), end=',')
         values.append(mid)
+        #values.append(int(end))
         
         for pix in np.nditer(image, op_flags=['readwrite']):
             if pix >= start and pix < end:
                 pix[...] = mid
+                #pix[...] = int(end)
 
         start = end
         mid = int(start + step / 2)
         end = start + step
-    print()
+    #print()
 
     print('Generating Textures')
+    init_texture_data_cache()
     textures = generate_textures(values, *image.shape)
-    print([(tex, len(textures[tex])) for tex in textures])
+    #print([(tex, len(textures[tex])) for tex in textures])
+    save_texture_data_cache()
     #write_svg_lines(textures[list(textures)[-2]], 'test.svg', *image.shape)
     #return
 
     # for each grey value, find all the regions
     print('Finding Regions')
     image = np.pad(image, 2, 'constant', constant_values = 0)
-    polys = find_regions(image, values) 
-
-    #print('Simplifying Regions')
-    #simplifed = []
-    #for poly in sorted(polys, key=lambda x: x.area):
-    #    simple = GreyPolygon(poly.grey, poly.simplify(0.1, preserve_topology=False))
-    #    simplifed.append(simple)
-    #polys = simplifed
+    polys = find_regions(image, values, min_area=25) 
 
     #print('Cleaning region overlaps')
     #polys = clean_regions(polys)
 
+    # No need to use non-Shapely polygon types before this
+    # This is the first function that returns the GreyPolygon type
     # sort them so that they are painted in the right order
     print('Sorting')
-    polys = sort_polys(polys)
+    polys = sort_polys([GreyPolygon(0, p) for p in polys])
     print(len(polys), 'polygons')
 
-    print('Fixing Greys')
+    print('Finding Greys')
     fix_greys(polys, image)
 
+    print('Simplifying Regions')
+    polys = [poly.buffer(5).buffer(-5) for poly in polys]
 
-    print('Generating shade')
+    print('Re-Sorting after simplification')
+    for poly in polys: poly.container_for = []
+    polys = sort_polys(polys)
+
+    print('Optimizing Polygon Stacks')
+    # Turn .contained_by into a proper tree
+    print(sum([len(p.container_for) for p in polys]), 'links')
+    for poly in polys:
+        for p in poly.container_for[:]:
+            for subp in p.container_for:
+                if subp in poly.container_for:
+                    poly.container_for.remove(subp)
+    print(sum([len(p.container_for) for p in polys]), 'links')
+
+    # Eliminate polygons that are the same colour as their parent
+    #elims = []
+    #for poly in polys:
+    #    elims.extend([p for p in poly.container_for if p.grey == poly.grey])
+    #for elim in elims:
+    #    polys.remove(elim)
+    #for poly in polys:
+    #    poly.container_for = [p for p in poly.container_for if p not in elims]
+    #print('eliminated', len(elims), elims)
+    
+    #test_point(polys, geom.Point(200,285))
+    # 0,1,11,24,38,46,
+    
+    print('Generating shading')
     lines = shade(polys, textures)
+    #lines = textures[76]
+
+    #try:
+    #    for i, poly in enumerate(polys):
+    #        if poly.container_for != []:
+    #            print(i, ':', [polys.index(p) for p in poly.container_for])
+    #except ValueError:
+    #    pass
 
     print('Drawing')
-    print(len(lines), 'lines')
+    #print(len(lines), 'lines')
     write_svg_lines(lines, 'test.svg', *image.shape)
     write_svg_greys(polys, 'test_polys.svg', *image.shape)
     #write_svg(polys, 'test.svg', *image.shape)
@@ -269,20 +328,7 @@ def main():
     im = Image.fromarray(image)
     im.save('test_out.png')
 
-def test():
-    p = geom.Polygon([(0,0), (0,10), (10,10), (10,0)])
-
-    print(p.area)
-    p = p.difference(geom.Point(0,0).buffer(0.1))
-    print(p.area)
-
-
 if __name__ == '__main__':
-    init_shade_data_cache()
-    calibrate_grey(64, hatch_shade, tolerance=1)
-    save_shade_data_cache()
-    exit()
-    render_svg('grey_test.svg')
-    shade_test()
-    test()
+    #render_svg('grey_test.svg')
+    #shade_test()
     main()

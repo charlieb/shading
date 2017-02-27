@@ -4,10 +4,59 @@ from math import pi, sqrt, sin, cos
 import subprocess
 import pickle
 
+import svgwrite as svg
+
 from random import random
 
 from shapely import geometry as geom
 from shapely import affinity
+
+
+def in_image(x,y, w,h):
+    return x + w/2 < w and \
+           x + w/2 >= 0 and \
+           y + h/2 < h and \
+           y + h/2 >= 0
+
+
+def spiral(points, step_along_spiral, step_out_per_rot, max_r):
+    dr = step_out_per_rot / (2*pi)
+    r = step_along_spiral
+    a = r / dr
+    x,y = 0,0
+    npoints = 0
+    while r < max_r:
+        if points.shape[0] <= npoints:
+            points.resize((npoints + 100000, points.shape[1]), refcheck=False)
+            #print('Resize to %s points for radius %s/%s'%(points.shape[0], r, max_r))
+
+        a += step_along_spiral / r
+        r = dr * a  
+
+        x = r * np.cos(a) 
+        y = r * np.sin(a) 
+
+        points[npoints,0] = x
+        points[npoints,1] = y
+
+        npoints += 1
+
+    #print('%s points'%npoints)
+    points.resize((npoints, points.shape[1]), refcheck=False)
+
+def spiral_shade(step, w,h):
+    points = np.empty([0,2], dtype='float64')
+    spiral(points, 2, step + 0.5, sqrt(2*(max(w,h)/2)**2))
+    #print(step, points.shape)
+    points[:,:] += [w/2, h/2]
+    if points.shape[0] < 2:
+        return geom.MultiLineString([])
+    lines = geom.asLineString(points)#.intersection(geom.box(0,0,w,h))
+    if isinstance(lines, geom.LineString):
+        return geom.MultiLineString([lines])
+    else:
+        return lines
+
 
 def random_line(length, w,h):
     x = random()*w
@@ -32,63 +81,27 @@ def random_lines(grey, w,h):
     return geom.MultiLineString([affinity.translate(random_line(length, w, h), woff, hoff)
                                 for _ in range(nlines)])
 
-def diagonal_lines(grey, w,h):
+def diagonal_lines(step, w,h):
+    if step == 0: return geom.MultiLineString([])
     x = max(w,h)
-    d = sqrt(x**2 * 2)
-    nlines = int(d * (1. - (grey / 256.)))
-    if nlines == 0: return geom.MultiLineString([])
+    nlines = int(2 * x / step)
 
-    step = d / nlines
-    xstep = sqrt(step**2 / 2) * 2
     lines = []
     for i in range(nlines):
-        if i*xstep <= x:
-            lines.append(geom.LineString([(i*xstep,0), (0,i*xstep)]))
+        if i*step <= x:
+            lines.append(geom.LineString([(i*step,0), (0,i*step)]))
         else:
-            lines.append(geom.LineString([(i*xstep-x,x), (x,i*xstep-x)]))
+            lines.append(geom.LineString([(i*step-x,x), (x,i*step-x)]))
     return geom.MultiLineString(lines)
 
-
-def hatching(grey, w,h):
-    x = max(w,h)
-    d = sqrt(x**2 * 2)
-    b = 1. - (grey / 255.) # blackenss
-    nlines = 2*(x - sqrt(x**2 - b*x**2))*(120./100.)
-    if nlines == 0: return geom.MultiLineString([])
-
-    step = d / nlines
-    xstep = sqrt(step**2 / 2) * 2
-    lines = []
-
-    xh = max(w,h) / 2.
-    rev = True
-
-    for i in range(int(nlines)):
-        if i*xstep <= x:
-            line = geom.LineString([(i*xstep,0), (0,i*xstep)])
-        else:
-            line = geom.LineString([(i*xstep-x,x), (x,i*xstep-x)])
-
-        if rev:
-            x1,y1,x2,y2 = *line.coords[0], *line.coords[1]
-            x1 = (xh*2-x1)
-            x2 = (xh*2-x2)
-            line = geom.LineString([(x1,y1), (x2,y2)])
-
-        lines.append(line)
-        rev = not rev
-
-    return geom.MultiLineString(lines)
 
 def hatch_shade(step, w,h):
+    if step == 0: return geom.MultiLineString([])
     x = max(w,h)
     nlines = 2 * x / step # you have to go twice as far to fill the whole square with hash
-    if nlines == 0: return geom.MultiLineString([])
 
     lines = []
-
     xh = x / 2.
-
     for i in range(int(nlines)):
         if i*step <= x:
             line = geom.LineString([(i*step,0), (0,i*step)])
@@ -106,9 +119,9 @@ def hatch_shade(step, w,h):
     return geom.MultiLineString(lines)
 
 def generate_textures(greys, w,h):
-    return {g: hatching(g, w,h) for g in greys}
-    return {g: diagonal_lines(g, w,h) for g in greys}
-    return {g: random_lines(g, w,h) for g in greys}
+    return {g: spiral_shade(v, w,h) for g,v in zip(greys, find_inputs_for_greys(greys, spiral_shade))}
+    return {g: hatch_shade(v, w,h) for g,v in zip(greys, find_inputs_for_greys(greys, hatch_shade))}
+    return {g: diagonal_lines(v, w,h) for g,v in zip(greys, find_inputs_for_greys(greys, diagonal_lines))}
 
 def shade_test():
     dwg = svg.Drawing('grey_test.svg')
@@ -135,7 +148,7 @@ def shade_test():
 
 grey_shade_cache = {}
 grey_shade_cache_filename = 'grey_cache.pickle'
-def init_shade_data_cache():
+def init_texture_data_cache():
     global grey_shade_cache
     try:
         with open(grey_shade_cache_filename, 'rb') as f:
@@ -143,7 +156,7 @@ def init_shade_data_cache():
     except FileNotFoundError:
         pass
 
-def save_shade_data_cache():
+def save_texture_data_cache():
     global grey_shade_cache
     with open(grey_shade_cache_filename, 'wb') as f:
         pickle.dump(grey_shade_cache, f, pickle.HIGHEST_PROTOCOL)
@@ -152,16 +165,14 @@ def test_shade_grey(shade_fn, inpt):
     global grey_shade_cache
 
     if inpt in grey_shade_cache:
-        print('Cached:', inpt, '=', grey_shade_cache[inpt])
         return grey_shade_cache[inpt]
-    print('Not Cached:', inpt)
 
     lines = shade_fn(inpt, 100,100)
 
     filename = 'temp_grey_test.svg'
     dwg = svg.Drawing(filename)
     for line in lines:
-        svgline = svg.shapes.Line(line.coords[0], line.coords[1])
+        svgline = svg.shapes.Polyline(line.coords)
         svgline.fill('none')
         svgline.stroke('black', width=1.00)
         dwg.add(svgline)
@@ -180,14 +191,15 @@ def test_shade_grey(shade_fn, inpt):
 def within(x, tolerance, y):
     return x - tolerance < y and x + tolerance > y
 
-def calibrate_grey(target_grey, shade_fn, tolerance=5, clear_cache=False):
-    lo,hi = 1, 100
+def calibrate_grey(target_grey, shade_fn, tolerance=5):
+    lo,hi = 0, 1000
     mid = lo + (hi - lo) / 2
 
     hi_grey = test_shade_grey(shade_fn, hi)
     mid_grey = test_shade_grey(shade_fn, mid)
     lo_grey = test_shade_grey(shade_fn, lo)
 
+    #print('----')
     while not within(target_grey, tolerance, mid_grey):
         if mid_grey > target_grey:
             hi = mid
@@ -198,9 +210,16 @@ def calibrate_grey(target_grey, shade_fn, tolerance=5, clear_cache=False):
         hi_grey = test_shade_grey(shade_fn, hi)
         mid_grey = test_shade_grey(shade_fn, mid)
         lo_grey = test_shade_grey(shade_fn, lo)
+        #print(mid, mid_grey)
 
-        print(lo, mid, hi, mid_grey)
+    #print(target_grey, mid)
+    save_texture_data_cache()
+    return mid
 
 def render_svg(filename, width=200):
     subprocess.run(['/usr/bin/inkscape', '-z', '-f', filename, '-w', str(width), '-b', 'white', '-e', filename + '.png'], stdout=subprocess.DEVNULL)
     subprocess.run(['/usr/bin/convert', '-type', 'Grayscale', filename + '.png', filename + '.png'], stdout=subprocess.DEVNULL)
+
+def find_inputs_for_greys(greys, shade_fn, tolerance=2):
+    return [calibrate_grey(grey, shade_fn, tolerance) for grey in greys] 
+
