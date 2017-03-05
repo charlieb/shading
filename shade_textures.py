@@ -11,6 +11,7 @@ from random import random
 from shapely import geometry as geom
 from shapely import affinity
 
+from itertools import product
 
 def in_image(x,y, w,h):
     return x + w/2 < w and \
@@ -31,10 +32,10 @@ def spiral(points, step_along_spiral, step_out_per_rot, max_r):
             #print('Resize to %s points for radius %s/%s'%(points.shape[0], r, max_r))
 
         a += step_along_spiral / r
-        r = dr * a  
+        r = dr * a
 
-        x = r * np.cos(a) 
-        y = r * np.sin(a) 
+        x = r * np.cos(a)
+        y = r * np.sin(a)
 
         points[npoints,0] = x
         points[npoints,1] = y
@@ -57,6 +58,18 @@ def spiral_shade(step, w,h):
     else:
         return lines
 
+def many_spirals(step, w,h):
+    """Step range should be 0-1 but internally it's 1-0 because more spiral = darker"""
+    spacing = 100
+    points = np.empty([0,2], dtype='float64')
+    spiral(points, 0.5, 2, (1-step) * spacing)
+    if points.shape[0] < 2: return geom.MultiLineString([])
+    little_spiral = geom.asLineString(points)
+    lines = []
+    print((w/spacing) * (h/spacing), 'spirals')
+    for x,y in product(range(int(w/spacing)), range(int(h/spacing))):
+        lines.append(affinity.translate(little_spiral, x*spacing, y*spacing))
+    return geom.MultiLineString(lines)
 
 def random_line(length, w,h):
     x = random()*w
@@ -108,7 +121,7 @@ def hatch_shade(step, w,h):
         else:
             line = geom.LineString([(i*step-x,x), (x,i*step-x)])
         lines.append(line)
-        
+
         x1,y1,x2,y2 = *line.coords[0], *line.coords[1]
         x1 = (xh*2-x1)
         x2 = (xh*2-x2)
@@ -119,6 +132,7 @@ def hatch_shade(step, w,h):
     return geom.MultiLineString(lines)
 
 def generate_textures(greys, w,h):
+    return {g: many_spirals(v, w,h) for g,v in zip(greys, find_inputs_for_greys(greys, many_spirals))}
     return {g: spiral_shade(v, w,h) for g,v in zip(greys, find_inputs_for_greys(greys, spiral_shade))}
     return {g: hatch_shade(v, w,h) for g,v in zip(greys, find_inputs_for_greys(greys, hatch_shade))}
     return {g: diagonal_lines(v, w,h) for g,v in zip(greys, find_inputs_for_greys(greys, diagonal_lines))}
@@ -192,14 +206,14 @@ def within(x, tolerance, y):
     return x - tolerance < y and x + tolerance > y
 
 def calibrate_grey(target_grey, shade_fn, tolerance=5):
-    lo,hi = 0, 1000
+    lo,hi = 0, 1#000
     mid = lo + (hi - lo) / 2
 
     hi_grey = test_shade_grey(shade_fn, hi)
     mid_grey = test_shade_grey(shade_fn, mid)
     lo_grey = test_shade_grey(shade_fn, lo)
 
-    #print('----')
+    print('----', target_grey, '----')
     while not within(target_grey, tolerance, mid_grey):
         if mid_grey > target_grey:
             hi = mid
@@ -210,9 +224,9 @@ def calibrate_grey(target_grey, shade_fn, tolerance=5):
         hi_grey = test_shade_grey(shade_fn, hi)
         mid_grey = test_shade_grey(shade_fn, mid)
         lo_grey = test_shade_grey(shade_fn, lo)
-        #print(mid, mid_grey)
+        print(mid, mid_grey)
 
-    #print(target_grey, mid)
+    print(target_grey, mid)
     save_texture_data_cache()
     return mid
 
@@ -221,5 +235,26 @@ def render_svg(filename, width=200):
     subprocess.run(['/usr/bin/convert', '-type', 'Grayscale', filename + '.png', filename + '.png'], stdout=subprocess.DEVNULL)
 
 def find_inputs_for_greys(greys, shade_fn, tolerance=2):
-    return [calibrate_grey(grey, shade_fn, tolerance) for grey in greys] 
+    calculate_normalization_scale(shade_fn)
+    print(list(zip(greys, [texture_data[shade_fn]["normalization_scale"](grey) for grey in greys])))
+    return [calibrate_grey(texture_data[shade_fn]["normalization_scale"](grey), shade_fn, tolerance) for grey in greys] 
 
+def calculate_normalization_scale(shade_fn):
+    gmin = test_shade_grey(shade_fn, texture_data[shade_fn]["calibration_range"][0])
+    gmax = test_shade_grey(shade_fn, texture_data[shade_fn]["calibration_range"][1])
+    gmin, gmax = min(gmax,gmin), max(gmax,gmin)
+    print(shade_fn.__name__, gmax, gmin)
+    texture_data[shade_fn]["normalization_scale"] = lambda x: gmin + (x / 255.) * (gmax - gmin)
+
+def scales():
+    pass
+
+def id(x): return x
+
+texture_data = {
+    diagonal_lines : {"calibration_range": (0,100), "normalization_scale": id },
+    hatch_shade : {"calibration_range": (0,100), "normalization_scale": id},
+    spiral_shade : {"calibration_range": (0,100), "normalization_scale": id},
+    many_spirals : {"calibration_range": (0,1), "normalization_scale": id},
+    scales : {"calibration_range": (0,100), "normalization_scale": id},
+}

@@ -146,7 +146,7 @@ def shade(polys, textures):
 
         for p in poly.container_for:
             shade_lines = shade_lines.difference(p)
-            
+
         if isinstance(shade_lines, geom.LineString):
             lines.append(shade_lines)
             continue
@@ -241,7 +241,7 @@ def main():
         #print((start, mid, end), end=',')
         values.append(mid)
         #values.append(int(end))
-        
+
         for pix in np.nditer(image, op_flags=['readwrite']):
             if pix >= start and pix < end:
                 pix[...] = mid
@@ -257,8 +257,9 @@ def main():
     textures = generate_textures(values, *image.shape)
     #print([(tex, len(textures[tex])) for tex in textures])
     save_texture_data_cache()
-    #write_svg_lines(textures[list(textures)[-2]], 'test.svg', *image.shape)
-    #return
+    for val, tex in textures.items():
+        write_svg_lines(tex, 'texture%s.svg'%val, *image.shape)
+    return
 
     # for each grey value, find all the regions
     print('Finding Regions')
@@ -295,19 +296,9 @@ def main():
                     poly.container_for.remove(subp)
     print(sum([len(p.container_for) for p in polys]), 'links')
 
-    # Eliminate polygons that are the same colour as their parent
-    #elims = []
-    #for poly in polys:
-    #    elims.extend([p for p in poly.container_for if p.grey == poly.grey])
-    #for elim in elims:
-    #    polys.remove(elim)
-    #for poly in polys:
-    #    poly.container_for = [p for p in poly.container_for if p not in elims]
-    #print('eliminated', len(elims), elims)
-    
     #test_point(polys, geom.Point(200,285))
     # 0,1,11,24,38,46,
-    
+
     print('Generating shading')
     lines = shade(polys, textures)
     #lines = textures[76]
